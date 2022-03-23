@@ -30,6 +30,12 @@ def run(weights, save_dir, kafka_server, kafka_topic):
     visualize = False  # visualize features
     line_thickness = 3  # bounding box thickness (pixels)
     save_img = True
+    kafka_sink = True
+    out_topic = "foreign-object-detection"
+    if kafka_sink:
+        kafka_producer = KafkaProducer(bootstrap_servers=kafka_server,
+                                       value_serializer=lambda m:
+                                       json.dumps(m).encode('utf-8'))
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
@@ -78,6 +84,7 @@ def run(weights, save_dir, kafka_server, kafka_topic):
                         save_path = os.path.join(save_dir, p.split('/')[-1])
                         s += '%gx%g ' % im.shape[2:]  # print string
                         annotator = Annotator(im0, line_width=line_thickness, example=str(names))
+                        bboxes = []
                         if len(det):
                             # Rescale boxes from img_size to im0 size
                             det[:, :4] = scale_coords(im.shape[2:], det[:, :4], im0.shape).round()
@@ -89,8 +96,18 @@ def run(weights, save_dir, kafka_server, kafka_topic):
 
                             # Write results
                             for *xyxy, conf, cls in reversed(det):
+                                c = int(cls)  # integer class
+                                if kafka_sink:
+                                    bbox = {
+                                        "label": names[c],
+                                        "score": float(conf),
+                                        "topleftx": int(xyxy[0]),
+                                        "toplefty": int(xyxy[1]),
+                                        "bottomrightx": int(xyxy[2]),
+                                        "bottomrighty": int(xyxy[3])
+                                    }
+                                    bboxes.append(bbox)
                                 if save_img:  # Add bbox to image
-                                    c = int(cls)  # integer class
                                     label = f'{names[c]} {conf:.2f}'
                                     annotator.box_label(xyxy, label, color=colors(c, True))
 
@@ -106,6 +123,10 @@ def run(weights, save_dir, kafka_server, kafka_topic):
                 t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
                 LOGGER.info(
                     f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {(1, 3, *imgsz)}' % t)
+                if kafka_sink:
+                    msg = {"frame": image_path,
+                           "bbox": bboxes}
+                    kafka_producer.send(out_topic, msg)
 
 
 def parse_opt():
