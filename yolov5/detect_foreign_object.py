@@ -16,7 +16,7 @@ from utils.plots import Annotator, colors, save_one_box
 from utils.torch_utils import select_device, time_sync
 
 @torch.no_grad()
-def run(weights, save_dir, kafka_server, kafka_topic):
+def run(weights, save_file, save_dir, kafka_server, intrusion_topic, kafka_sink, detection_topic):
     imgsz = (640, 640)  # inference size (height, width)
     conf_thres = 0.25   # confidence threshold
     iou_thres = 0.45  # NMS IOU threshold
@@ -29,9 +29,6 @@ def run(weights, save_dir, kafka_server, kafka_topic):
     agnostic_nms = False  # class-agnostic NMS
     visualize = False  # visualize features
     line_thickness = 3  # bounding box thickness (pixels)
-    save_img = True
-    kafka_sink = True
-    out_topic = "foreign-object-detection"
     if kafka_sink:
         kafka_producer = KafkaProducer(bootstrap_servers=kafka_server,
                                        value_serializer=lambda m:
@@ -46,7 +43,7 @@ def run(weights, save_dir, kafka_server, kafka_topic):
     imgsz = check_img_size(imgsz, s=stride)  # check image size
     model.warmup(imgsz=(1 if pt else bs, 3, *imgsz))  # warmup
 
-    kafka_consumer = KafkaConsumer(kafka_topic, bootstrap_servers=kafka_server)
+    kafka_consumer = KafkaConsumer(intrusion_topic, bootstrap_servers=kafka_server)
     while True:
         raw_messages = kafka_consumer.poll(timeout_ms=1000.0, max_records=5000)
         for _, msg_list in raw_messages.items():
@@ -107,7 +104,7 @@ def run(weights, save_dir, kafka_server, kafka_topic):
                                         "bottomrighty": int(xyxy[3])
                                     }
                                     bboxes.append(bbox)
-                                if save_img:  # Add bbox to image
+                                if save_file:  # Add bbox to image
                                     label = f'{names[c]} {conf:.2f}'
                                     annotator.box_label(xyxy, label, color=colors(c, True))
 
@@ -115,7 +112,7 @@ def run(weights, save_dir, kafka_server, kafka_topic):
                         im0 = annotator.result()
 
                         # Save results (image with detections)
-                        if save_img:
+                        if save_file:
                             cv2.imwrite(save_path, im0)
 
                     # Print time (inference-only)
@@ -126,19 +123,23 @@ def run(weights, save_dir, kafka_server, kafka_topic):
                 if kafka_sink:
                     msg = {"frame": image_path,
                            "bbox": bboxes}
-                    kafka_producer.send(out_topic, msg)
+                    kafka_producer.send(detection_topic, msg)
 
 
 def parse_opt():
     parser = argparse.ArgumentParser()
     parser.add_argument("-w", '--weights', help='model path',
                         default='yolov5s.pt')
+    parser.add_argument('--save_file', action='store_true', help='whether save file')
     parser.add_argument("-s", '--save_dir', help='save dir path',
                         default='detect_results')
     parser.add_argument("-ks", "--kafka_server", help="kafka server",
                         default="172.16.29.105:9092")
-    parser.add_argument("-kt", "--kafka_topic", help="kafka topic",
+    parser.add_argument("-it", "--intrusion_topic", help="intrusion topic",
                         default="intrusion-detection")
+    parser.add_argument('--kafka_sink', action='store_true', help='whether kafka sink')
+    parser.add_argument("-dt", "--detection_topic", help="detection topic",
+                        default="foreign-object-detection")
     opt = parser.parse_args()
     return opt
 
